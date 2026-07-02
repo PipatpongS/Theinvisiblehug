@@ -28,14 +28,14 @@ export function AiInfo() {
           </h2>
           
           <div className="relative flex items-center justify-center flex-1 w-full min-h-0 py-2">
-            <svg className="h-full transform -rotate-90" viewBox="0 0 200 200" style={{ maxHeight: '200px' }}>
+            <svg className="h-full transform -rotate-90" viewBox="0 0 200 200" style={{ maxHeight: '180px' }}>
               <circle cx="100" cy="100" r="85" stroke="currentColor" strokeWidth="18" fill="transparent" className="text-slate-100" />
               <circle cx="100" cy="100" r="85" stroke="currentColor" strokeWidth="18" fill="transparent" 
                 strokeDasharray="534" strokeDashoffset={534 - (534 * 95) / 100}
                 className="text-indigo-500 transition-all duration-1000 ease-out drop-shadow-sm" />
             </svg>
             <div className="absolute inset-0 flex items-center justify-center flex-col">
-              <span className="text-5xl font-black text-slate-800 tracking-tighter" style={{ fontSize: '80px' }}>95<span className="text-slate-400" style={{ fontSize: '36px' }}>%</span></span>
+              <span className="text-5xl font-black text-slate-800 tracking-tighter" style={{ fontSize: '70px' }}>95<span className="text-slate-400" style={{ fontSize: '30px' }}>%</span></span>
             </div>
           </div>
           <p className="text-base font-bold text-indigo-600 bg-indigo-50 px-5 py-2 rounded-full mt-2">
@@ -54,7 +54,7 @@ export function AiInfo() {
           
           <div className="mt-auto">
             <div className="flex items-end justify-between mb-3">
-              <span className="font-black text-emerald-600 tracking-tighter" style={{ fontSize: '85px', lineHeight: '1' }}>96<span className="text-emerald-400" style={{ fontSize: '40px' }}>%</span></span>
+              <span className="font-black text-emerald-600 tracking-tighter" style={{ fontSize: '75px', lineHeight: '1' }}>96<span className="text-emerald-400" style={{ fontSize: '36px' }}>%</span></span>
             </div>
             <div className="w-full bg-slate-100 rounded-full h-4 mt-2">
               <div className="bg-emerald-500 h-4 rounded-full" style={{ width: '96%' }}></div>
@@ -73,7 +73,7 @@ export function AiInfo() {
           
           <div className="mt-auto">
             <div className="flex items-end justify-between mb-3">
-              <span className="font-black text-rose-500 tracking-tighter" style={{ fontSize: '85px', lineHeight: '1' }}>93<span className="text-rose-400" style={{ fontSize: '40px' }}>%</span></span>
+              <span className="font-black text-rose-500 tracking-tighter" style={{ fontSize: '75px', lineHeight: '1' }}>93<span className="text-rose-400" style={{ fontSize: '36px' }}>%</span></span>
             </div>
             <div className="w-full bg-slate-100 rounded-full h-4 mt-2">
               <div className="bg-rose-500 h-4 rounded-full" style={{ width: '93%' }}></div>
