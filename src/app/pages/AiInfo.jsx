@@ -97,19 +97,19 @@ export function AiInfo() {
 
         {/* Text Explanation */}
         <div className="w-7/12 h-full flex flex-col justify-center overflow-y-auto pr-4 py-2">
-          <h3 className="font-extrabold text-slate-800 text-3xl mb-4 flex items-center gap-4">
-            <ShieldCheck className="w-10 h-10 text-blue-500" />
+          <h3 className="font-extrabold text-slate-800 text-2xl mb-3 flex items-center gap-3">
+            <ShieldCheck className="w-8 h-8 text-blue-500" />
             Real-world Test Results
           </h3>
-          <p className="text-slate-500 text-lg mb-6 border-l-4 border-indigo-200 pl-4 py-0.5">Based on a test of 1,836 data samples using the Stacking Ensemble AI (Heart rate & EDA).</p>
+          <p className="text-slate-500 text-base mb-4 border-l-4 border-indigo-200 pl-4 py-0.5">Based on a test of 1,836 data samples using the Stacking Ensemble AI (Heart rate & EDA).</p>
           
-          <ul className="space-y-6 text-xl text-slate-600 font-medium">
+          <ul className="space-y-4 text-lg text-slate-600 font-medium">
             <li className="flex items-start gap-4">
-              <CheckCircle2 className="w-8 h-8 text-emerald-500 flex-shrink-0 mt-0.5" />
+              <CheckCircle2 className="w-7 h-7 text-emerald-500 flex-shrink-0 mt-0.5" />
               <span className="leading-snug"><strong>High Safety:</strong> Successfully caught <strong>611 out of 662</strong> actual stress events (92%). The system reliably detects meltdowns before they escalate.</span>
             </li>
             <li className="flex items-start gap-4">
-              <CheckCircle2 className="w-8 h-8 text-emerald-500 flex-shrink-0 mt-0.5" />
+              <CheckCircle2 className="w-7 h-7 text-emerald-500 flex-shrink-0 mt-0.5" />
               <span className="leading-snug"><strong>Low False Alarms:</strong> Out of 1,174 calm moments, it triggered incorrectly only 37 times (3%). You won't be bothered by false notifications.</span>
             </li>
           </ul>
