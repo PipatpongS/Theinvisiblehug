@@ -1,5 +1,5 @@
 import { Outlet, NavLink } from "react-router";
-import { Activity, Sliders, BarChart2, Settings, User, Bell, X, AlertTriangle, CheckCircle2, PhoneCall, Download, ChevronRight } from "lucide-react";
+import { Activity, Sliders, BarChart2, Settings, User, Bell, X, AlertTriangle, CheckCircle2, PhoneCall, Download, ChevronRight, Menu, Crown, BrainCircuit } from "lucide-react";
 import clsx from "clsx";
 import { useState, useRef, useEffect } from "react";
 import logoImg from "../../imports/\u0E2A\u0E33\u0E40\u0E19\u0E32\u0E02\u0E2D\u0E07_The_Invisible_Hug_Pitch_deck-3.png";
@@ -121,8 +121,10 @@ export function Layout() {
     { name: "Dashboard", path: "/", icon: Activity },
     { name: "Controls & Baseline", path: "/controls", icon: Sliders },
     { name: "Analytics", path: "/analytics", icon: BarChart2 },
-    { name: "Settings", path: "/settings", icon: Settings }
+    { name: "Settings", path: "/settings", icon: Settings },
+    { name: "AI Info", path: "/ai-info", icon: BrainCircuit }
   ];
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [notifOpen, setNotifOpen] = useState(false);
   const [filter, setFilter] = useState("all");
   const [notifications, setNotifications] = useState(MOCK_NOTIFICATIONS);
@@ -147,17 +149,17 @@ export function Layout() {
     className="flex font-sans selection:bg-blue-500/30"
     style={{ backgroundColor: "#f0f4fc", height: "100dvh", minHeight: "100vh", overflow: "hidden" }}
   >
-      {
-    /* Sidebar — dark navy */
-  }
+      {/* Sidebar — dark navy */}
       <aside
-    className="w-64 flex flex-col flex-shrink-0"
-    style={{ backgroundColor: "#0c1428", height: "100%", overflow: "hidden" }}
-  >
-        {
-    /* Logo Section */
-  }
-        <div className="px-5 pt-7 pb-6 flex flex-col items-center gap-3 border-b border-white/5 relative overflow-hidden flex-shrink-0">
+        className={clsx(
+          "flex-shrink-0 transition-all duration-300 ease-in-out",
+          isSidebarOpen ? "w-64" : "w-0 opacity-0"
+        )}
+        style={{ backgroundColor: "#0c1428", height: "100%", overflow: "hidden" }}
+      >
+        <div className="w-64 h-full flex flex-col">
+          {/* Logo Section */}
+          <div className="px-5 pt-7 pb-6 flex flex-col items-center gap-3 border-b border-white/5 relative overflow-hidden flex-shrink-0">
           {
     /* Background ambient glow */
   }
@@ -199,7 +201,7 @@ export function Layout() {
     key={item.path}
     to={item.path}
     className={({ isActive }) => clsx(
-      "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 border",
+      "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 border whitespace-nowrap",
       isActive ? "border-blue-500/30 text-blue-300" : "border-transparent text-slate-400 hover:text-slate-200 hover:bg-white/5"
     )}
     style={({ isActive }) => isActive ? { background: "linear-gradient(135deg, rgba(67,97,238,0.2), rgba(67,97,238,0.08))" } : void 0}
@@ -210,21 +212,22 @@ export function Layout() {
         </nav>
 
         <div className="p-4 border-t border-white/5">
-          <div
-    className="rounded-xl p-4 relative overflow-hidden border border-purple-500/25"
-    style={{ background: "linear-gradient(135deg, rgba(88,28,135,0.45), rgba(157,23,77,0.25))" }}
-  >
-            <div className="absolute top-2.5 right-2.5">
-              <span className="flex h-2 w-2 relative">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-400" />
-              </span>
+          <div className="rounded-lg p-3 relative flex items-start gap-2.5 bg-slate-800/30 border border-slate-700/50 transition-colors hover:bg-slate-800/50">
+            <Crown className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <h3 className="text-xs font-semibold text-amber-500/90 flex items-center gap-1.5">
+                Premium Active
+                <span className="flex h-1.5 w-1.5 relative ml-auto">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-400" />
+                </span>
+              </h3>
+              <p className="text-[10px] text-slate-400 leading-tight mt-1">
+                Medical-grade analytics enabled
+              </p>
             </div>
-            <h3 className="text-sm font-bold text-purple-300 mb-1">Premium Active</h3>
-            <p className="text-[11px] text-purple-200/60 leading-relaxed mt-1.5">
-              Medical-grade analytics &amp; remote access enabled.
-            </p>
           </div>
+        </div>
         </div>
       </aside>
 
@@ -232,10 +235,29 @@ export function Layout() {
     /* Main content */
   }
       <main className="flex-1 flex flex-col min-w-0" style={{ height: "100%", overflow: "hidden" }}>
-        {
-    /* Header */
-  }
-        <header className="h-12 flex items-center justify-end px-8 border-b border-slate-200 bg-white z-10 flex-shrink-0">
+        {/* Header */}
+        <header className="h-12 flex items-center justify-between px-8 border-b border-slate-200 bg-white z-50 flex-shrink-0 relative">
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => setIsSidebarOpen(prev => !prev)}
+              className="p-1.5 -ml-4 rounded-lg hover:bg-slate-100 text-slate-500 transition-colors"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            {!isSidebarOpen && (
+              <div className="flex items-center gap-2 animate-in fade-in duration-300 ml-1">
+                <img
+                  src={logoImg}
+                  alt="Logo"
+                  className="w-6 h-6 object-contain"
+                  style={{ filter: "drop-shadow(0 2px 4px rgba(64,187,166,0.3))" }}
+                />
+                <span className="text-[11px] font-black tracking-[0.15em] uppercase text-slate-700">
+                  The Invisible <span style={{ color: "#40bba6" }}>HUG</span>
+                </span>
+              </div>
+            )}
+          </div>
           <div className="flex items-center gap-4">
 
             {

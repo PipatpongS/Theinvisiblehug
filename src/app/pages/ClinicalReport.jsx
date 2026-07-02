@@ -273,19 +273,14 @@ export function ClinicalReport() {
   const [zoom, setZoom] = useState(100);
   const busy = pdfState.loading || pngState.loading;
   const capturePages = async (onProgress) => {
-    const { default: html2canvas } = await import("html2canvas");
+    const { toCanvas } = await import("html-to-image");
     const pages = Array.from(document.querySelectorAll(".a4-page"));
     const canvases = [];
     for (let i = 0; i < pages.length; i++) {
       onProgress(i + 1, pages.length);
-      const canvas = await html2canvas(pages[i], {
-        scale: 2,
-        useCORS: true,
-        allowTaint: true,
+      const canvas = await toCanvas(pages[i], {
         backgroundColor: "#ffffff",
-        logging: false,
-        width: pages[i].offsetWidth,
-        height: pages[i].scrollHeight
+        pixelRatio: 2
       });
       canvases.push(canvas);
     }
@@ -308,7 +303,17 @@ export function ClinicalReport() {
       });
       const blob = pdf.output("blob");
       const url = URL.createObjectURL(blob);
-      window.open(url, "_blank");
+      const a = document.createElement("a");
+      a.style.display = "none";
+      a.href = url;
+      a.download = "The_Invisible_Hug_Report.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("PDF Generation Error:", error);
+      alert("Failed to generate PDF: " + (error.message || "Unknown error"));
     } finally {
       setPdfState(idle);
     }
@@ -450,27 +455,15 @@ export function ClinicalReport() {
             </div>
 
             {
-    /* Export PDF → opens in new tab */
-  }
+              /* Export PDF → opens in new tab */
+            }
             <button
-    onClick={exportPDF}
-    disabled={busy}
-    className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 disabled:bg-blue-400 text-white px-4 py-2 rounded-xl text-sm font-bold transition-colors shadow"
-  >
-              {pdfState.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ExternalLink className="w-4 h-4" />}
-              {pdfState.loading ? `${pdfState.progress}/${pdfState.total}` : "Open PDF"}
-            </button>
-
-            {
-    /* Export PNG → gallery modal */
-  }
-            <button
-    onClick={exportPNG}
-    disabled={busy}
-    className="flex items-center gap-2 bg-violet-700 hover:bg-violet-800 disabled:bg-violet-400 text-white px-4 py-2 rounded-xl text-sm font-bold transition-colors shadow"
-  >
-              {pngState.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Images className="w-4 h-4" />}
-              {pngState.loading ? `${pngState.progress}/${pngState.total}` : "PNG for Slides"}
+              onClick={exportPDF}
+              disabled={busy}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white px-4 py-2 rounded-xl text-sm font-bold transition-colors shadow"
+            >
+              {pdfState.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              {pdfState.loading ? `${pdfState.progress}/${pdfState.total}` : "Download PDF"}
             </button>
           </div>
         </div>

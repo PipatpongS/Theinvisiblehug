@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   LineChart,
   Line,
@@ -10,8 +10,12 @@ import {
   PieChart,
   Pie,
   Cell,
-  ReferenceLine
+  ReferenceLine,
+  AreaChart,
+  Area
 } from "recharts";
+import { connectMQTT, disconnectMQTT } from "../../services/mqttClient";
+import { fetchHistory, fetchDailyStats } from "../../services/influxClient";
 import {
   Heart,
   Activity,
@@ -25,7 +29,8 @@ import {
   BrainCircuit,
   ChevronRight,
   Clock,
-  Gauge
+  Gauge,
+  Cloud
 } from "lucide-react";
 import clsx from "clsx";
 let globalTimeCounter = 30;
@@ -46,23 +51,154 @@ const CustomPieTooltip = ({ active, payload }) => {
   }
   return null;
 };
+
+const CustomReferenceLabel = (props) => {
+  const { viewBox, value, fill, position = "Left", dx = 0, dy = 0 } = props;
+  const { x, y, width } = viewBox;
+  const isRight = position.includes('Right');
+  
+  return (
+    <foreignObject x={(isRight ? x + width - 110 : x + 10) + dx} y={(y || 0) - 22 + dy} width={100} height={20}>
+      <div style={{ display: 'flex', justifyContent: isRight ? 'flex-end' : 'flex-start' }}>
+        <span style={{ 
+          backgroundColor: 'rgba(255, 255, 255, 0.85)', 
+          padding: '1px 6px', 
+          borderRadius: '6px', 
+          fontSize: '10px', 
+          fontWeight: 700, 
+          color: fill,
+          border: `1px solid ${fill}40`,
+          backdropFilter: 'blur(3px)',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+          whiteSpace: 'nowrap'
+        }}>
+          {value}
+        </span>
+      </div>
+    </foreignObject>
+  );
+};
 export function Dashboard() {
-  const [data, setData] = useState(generateInitialData);
+  const [data, setData] = useState([]);
+  const [historyData, setHistoryData] = useState([]);
+  const [dailyStats, setDailyStats] = useState(null);
   const [status, setStatus] = useState("normal");
+  const [mqttStatus, setMqttStatus] = useState("Connecting...");
+  const [uiLatency, setUiLatency] = useState(0);
+  const [historyRange, setHistoryRange] = useState("-24h");
+  const [historyAggregate, setHistoryAggregate] = useState("1m");
+  const [deviceActive, setDeviceActive] = useState(false);
+  const [baselineData, setBaselineData] = useState({ hr: null, eda: null, temp: null, imu: null });
+  const [showLines, setShowLines] = useState({ max: true, min: true, avg: true, baseline: true });
+  const deviceTimeoutRef = useRef(null);
+  
+  // โหลด History Data จาก InfluxDB เมื่อ Range หรือ Aggregate เปลี่ยน
   useEffect(() => {
-    const interval = setInterval(() => {
+    const loadHistory = async () => {
+      try {
+        const hData = await fetchHistory(historyRange, historyAggregate);
+        setHistoryData(hData);
+      } catch (error) {
+        console.error("Failed to load history", error);
+      }
+    };
+    loadHistory();
+  }, [historyRange, historyAggregate]);
+
+  // โหลด Daily Stats ตอนเปิดเว็บและทุกๆ 5 วินาที
+  useEffect(() => {
+    const loadDailyStats = async () => {
+      try {
+        const stats = await fetchDailyStats();
+        setDailyStats(stats);
+      } catch (error) {
+        console.error("Failed to load daily stats", error);
+      }
+    };
+
+    loadDailyStats();
+
+    // ดึงสถิติใหม่ทุกๆ 5 วินาทีตามที่ผู้ใช้ต้องการ
+    const intervalStats = setInterval(loadDailyStats, 5 * 1000);
+    return () => clearInterval(intervalStats);
+  }, []);
+
+  // เชื่อมต่อ MQTT รับ Live Data
+  useEffect(() => {
+    connectMQTT((incomingData) => {
+      // incomingData หน้าตาจะเป็น { bpm: 80, temp: 36.5, gsr: 120, ax: 1, ... }
+      
+      // คำนวณความเคลื่อนไหว (IMU) แบบง่ายๆ จาก ax, ay, az
+      const imuMagnitude = Math.sqrt(
+        Math.pow(incomingData.ax || 0, 2) + 
+        Math.pow(incomingData.ay || 0, 2) + 
+        Math.pow(incomingData.az || 0, 2)
+      );
+
+      const newDataPoint = {
+        time: new Date().toLocaleString(),
+        hr: incomingData.bpm || 0,
+        eda: (incomingData.gsr || 0) / 100, // แปลง GSR เป็น EDA คร่าวๆ
+        temp: incomingData.temp || 0,
+        imu: imuMagnitude
+      };
+
       setData((prev) => {
-        const next = {
-          time: (globalTimeCounter++).toString(),
-          hr: 80 + Math.random() * 10 - 5,
-          eda: 5 + Math.random() * 2 - 1,
-          temp: 36.5 + Math.random() * 0.4 - 0.2,
-          imu: 1 + Math.random() * 0.5
-        };
-        return [...prev.slice(1), next];
+        // เก็บข้อมูล Live ไว้แสดงบนกราฟ 60 จุดล่าสุด (ประมาณ 1 นาทีถ้าส่งทุกวิ)
+        const next = [...prev, newDataPoint];
+        if (next.length > 60) return next.slice(next.length - 60);
+        return next;
       });
-    }, 1500);
-    return () => clearInterval(interval);
+      
+      setDeviceActive(true);
+      if (deviceTimeoutRef.current) clearTimeout(deviceTimeoutRef.current);
+      deviceTimeoutRef.current = setTimeout(() => {
+        setDeviceActive(false);
+      }, 5000);
+
+      // คำนวณ UI Latency จริงจาก Timestamp
+      if (incomingData.ts) {
+        const now = Date.now();
+        const diff = now - incomingData.ts;
+        if (diff >= 0 && diff < 5000) { // กรองค่าที่ผิดปกติออก
+          setUiLatency(diff);
+        }
+      }
+
+      // เปลี่ยนสถานะคร่าวๆ ถ้าหัวใจเต้นเร็วมาก
+      if (incomingData.bpm > 100) setStatus("meltdown");
+      else if (incomingData.bpm > 85) setStatus("risk");
+      else setStatus("normal");
+    }, setMqttStatus);
+
+    return () => disconnectMQTT();
+  }, []);
+
+  // โหลดค่า Baseline จาก localStorage
+  useEffect(() => {
+    const updateBaselines = () => {
+      const hr = localStorage.getItem("baseline_hr");
+      const eda = localStorage.getItem("baseline_eda");
+      const temp = localStorage.getItem("baseline_temp");
+      const imu = localStorage.getItem("baseline_imu");
+      
+      // Fallbacks if missing or old invalid mock values
+      const hrVal = hr && hr !== "0.0" ? parseFloat(hr) : 82.0;
+      const edaVal = eda && eda !== "0.0" && eda !== "4.20" && eda !== "4.2" && eda !== "0.00" ? parseFloat(eda) : 3615.5;
+      const tempVal = temp && temp !== "0.0" && temp !== "36.60" && temp !== "36.6" && temp !== "0.00" ? parseFloat(temp) : 24.8;
+      const imuVal = imu && imu !== "0.00" ? parseFloat(imu) : 0.15;
+
+      setBaselineData({
+        hr: hrVal,
+        eda: edaVal,
+        temp: tempVal,
+        imu: imuVal,
+      });
+    };
+    
+    updateBaselines();
+    window.addEventListener("baselineUpdated", updateBaselines);
+    return () => window.removeEventListener("baselineUpdated", updateBaselines);
   }, []);
   const statusConfig = {
     normal: {
@@ -109,27 +245,66 @@ export function Dashboard() {
     setStatus((prev) => prev === "normal" ? "risk" : prev === "risk" ? "meltdown" : "normal");
   };
   const currentStatus = statusConfig[status];
-  const currentData = data[data.length - 1];
+  
+  // รวมข้อมูล History กับ Live Data เข้าด้วยกัน
+  const combinedData = useMemo(() => {
+    const liveMapped = data.map(d => ({
+      time: d.time,
+      bpm: d.hr,
+      gsr: d.eda,
+      temp: d.temp,
+      imu: d.imu
+    }));
+    return [...historyData, ...liveMapped];
+  }, [historyData, data]);
+
+  // คำนวณค่า Min/Max ของกราฟ
+  const { hrStats, edaStats, tempStats, imuStats } = useMemo(() => {
+    const getStats = (dataKey) => {
+      if (!combinedData || combinedData.length === 0) return { min: null, max: null, avg: null };
+      const values = combinedData.map(d => d[dataKey]).filter(v => v !== undefined && v !== null && !isNaN(v));
+      if (values.length === 0) return { min: null, max: null, avg: null };
+      const avg = values.reduce((sum, v) => sum + v, 0) / values.length;
+      return { min: Math.min(...values), max: Math.max(...values), avg };
+    };
+    return {
+      hrStats: getStats('bpm'),
+      edaStats: getStats('gsr'),
+      tempStats: getStats('temp'),
+      imuStats: getStats('imu')
+    };
+  }, [combinedData]);
+
+  // ใช้ข้อมูลล่าสุดที่รับมา หรือใช้ค่า 0 ถ้ายังไม่มีข้อมูล
+  const currentData = data.length > 0 ? data[data.length - 1] : { hr: 0, eda: 0, temp: 0, imu: 0 };
+  
+  const defaultStats = { avg: 0, min: 0, max: 0, std: 0 };
+  const sBpm = dailyStats?.bpm || defaultStats;
+  const sEda = dailyStats?.gsr || defaultStats;
+  const sTemp = dailyStats?.temp || defaultStats;
+  const sImu = dailyStats?.imu || defaultStats;
+
   const dailySummaries = [
-    { name: "Heart Rate", unit: "BPM", current: currentData.hr.toFixed(1), avg: 82.4, min: 65, max: 115.2, std: 4.8, icon: Heart, color: "text-rose-500", bg: "bg-rose-50", border: "border-rose-200", hex: "#f43f5e" },
-    { name: "EDA (Stress)", unit: "\xB5S", current: currentData.eda.toFixed(2), avg: 4.8, min: 1.2, max: 8.9, std: 1.2, icon: Activity, color: "text-blue-500", bg: "bg-blue-50", border: "border-blue-200", hex: "#3b82f6" },
-    { name: "Skin Temp", unit: "\xB0C", current: currentData.temp.toFixed(1), avg: 36.6, min: 36.1, max: 37.4, std: 0.2, icon: Thermometer, color: "text-amber-500", bg: "bg-amber-50", border: "border-amber-200", hex: "#f59e0b" },
-    { name: "Movement", unit: "g", current: currentData.imu.toFixed(2), avg: 1.1, min: 0.1, max: 3.5, std: 0.6, icon: Zap, color: "text-violet-500", bg: "bg-violet-50", border: "border-violet-200", hex: "#8b5cf6" }
+    { name: "Heart Rate (BPM)", unit: "BPM", current: currentData.hr.toFixed(1), avg: sBpm.avg.toFixed(1), min: sBpm.min.toFixed(0), max: sBpm.max.toFixed(1), std: sBpm.std.toFixed(1), icon: Heart, color: "text-rose-500", bg: "bg-rose-50", border: "border-rose-200", hex: "#f43f5e" },
+    { name: "Electrodermal Activity (\xB5S)", unit: "\xB5S", current: currentData.eda.toFixed(2), avg: sEda.avg.toFixed(2), min: sEda.min.toFixed(2), max: sEda.max.toFixed(2), std: sEda.std.toFixed(2), icon: Activity, color: "text-blue-500", bg: "bg-blue-50", border: "border-blue-200", hex: "#3b82f6" },
+    { name: "Skin Temperature (\xB0C)", unit: "\xB0C", current: currentData.temp.toFixed(1), avg: sTemp.avg.toFixed(1), min: sTemp.min.toFixed(1), max: sTemp.max.toFixed(1), std: sTemp.std.toFixed(1), icon: Thermometer, color: "text-amber-500", bg: "bg-amber-50", border: "border-amber-200", hex: "#f59e0b" },
+    { name: "Movement Magnitude (g)", unit: "g", current: currentData.imu.toFixed(2), avg: sImu.avg.toFixed(2), min: sImu.min.toFixed(2), max: sImu.max.toFixed(2), std: sImu.std.toFixed(2), icon: Zap, color: "text-violet-500", bg: "bg-violet-50", border: "border-violet-200", hex: "#8b5cf6" }
   ];
   const statusProportionData = [
-    { name: "Normal", value: 82, color: "#059669" },
-    { name: "At Risk", value: 14, color: "#d97706" },
-    { name: "Meltdown", value: 4, color: "#dc2626" }
+    { name: "Normal", value: 82, color: "#618C28" },
+    { name: "Risk", value: 14, color: "#DFB143" },
+    { name: "Meltdown", value: 4, color: "#D32027" }
   ];
+  const isConnected = mqttStatus === "Connected" && deviceActive;
   const sensorReadiness = [
-    { name: "Heart Rate", shortName: "HR", score: 98, color: "#ef4444", trackColor: "#fecdd3" },
-    { name: "EDA (Stress)", shortName: "EDA", score: 95, color: "#3b82f6", trackColor: "#bfdbfe" },
-    { name: "Skin Temp", shortName: "Temp", score: 100, color: "#f97316", trackColor: "#fed7aa" },
-    { name: "Movement", shortName: "IMU", score: 92, color: "#8b5cf6", trackColor: "#ddd6fe" }
+    { name: "Heart Rate", shortName: "HR", score: isConnected ? 100 : 0, color: "#ef4444", trackColor: "#fecdd3" },
+    { name: "EDA (Stress)", shortName: "EDA", score: isConnected ? 100 : 0, color: "#3b82f6", trackColor: "#bfdbfe" },
+    { name: "Skin Temp", shortName: "Temp", score: isConnected ? 100 : 0, color: "#f97316", trackColor: "#fed7aa" },
+    { name: "Movement", shortName: "IMU", score: isConnected ? 100 : 0, color: "#8b5cf6", trackColor: "#ddd6fe" }
   ];
-  const overallReadiness = Math.round(
-    sensorReadiness.reduce((sum, s) => sum + s.score, 0) / sensorReadiness.length
-  );
+  const overallReadiness = sensorReadiness.length > 0 
+    ? Math.round(sensorReadiness.reduce((sum, s) => sum + s.score, 0) / sensorReadiness.length) 
+    : 0;
   return <div className="space-y-8 pb-10">
       <div className="flex flex-col xl:flex-row gap-6">
         {
@@ -181,8 +356,10 @@ export function Dashboard() {
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/70 border border-slate-200">
-                  <span className={clsx("w-1.5 h-1.5 rounded-full animate-pulse", currentStatus.dot)} />
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Live</span>
+                  <span className={clsx("w-1.5 h-1.5 rounded-full", isConnected ? `animate-pulse ${currentStatus.dot}` : "bg-slate-400")} />
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                    {isConnected ? "Live" : "Offline"}
+                  </span>
                 </div>
               </div>
 
@@ -210,7 +387,7 @@ export function Dashboard() {
   }
                 <div
     className={clsx(
-      "text-4xl font-extrabold tracking-widest uppercase transition-all duration-500 text-center",
+      "text-[44px] font-extrabold tracking-widest uppercase transition-all duration-500 text-center leading-none mt-2",
       currentStatus.color
     )}
     style={{ textShadow: `0 2px 16px ${currentStatus.hexColor}40` }}
@@ -254,7 +431,7 @@ export function Dashboard() {
                 <div className="flex flex-col items-center gap-1">
                   <Cpu className="w-4 h-4 text-slate-400 mb-0.5" />
                   <span className="text-xl font-bold text-slate-700">v1.0</span>
-                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">TinyML</span>
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">AI Model</span>
                 </div>
               </div>
             </div>
@@ -314,10 +491,8 @@ export function Dashboard() {
           </div>
         </div>
 
-        {
-    /* Right Column: Hardware Status */
-  }
-        <div className="w-full xl:w-96 bg-white border border-slate-200 rounded-3xl p-8 shadow-sm flex flex-col gap-6 relative overflow-hidden">
+        {/* Right Column: Hardware Status */}
+        <div className="w-full xl:w-[400px] flex-shrink-0 bg-white border border-slate-200 rounded-3xl p-8 shadow-sm flex flex-col gap-6 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-32 h-32 rounded-full blur-3xl opacity-30 pointer-events-none" style={{ background: "radial-gradient(circle, #4361ee20, transparent)" }} />
           <h2 className="text-slate-800 font-semibold text-lg flex items-center gap-2">
             <Zap className="w-5 h-5 text-blue-500" />
@@ -335,28 +510,28 @@ export function Dashboard() {
                 </div>
                 <span className="text-sm font-medium">Battery Level</span>
               </div>
-              <span className="font-bold text-emerald-600">85%</span>
+              <span className="font-bold text-emerald-600">100%</span>
             </div>
 
-            {
-    /* Wi-Fi */
-  }
+            {/* Wi-Fi / MQTT Status */}
             <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-100">
               <div className="flex items-center gap-3 text-slate-600">
-                <div className="p-2 rounded-lg bg-blue-50">
-                  <Wifi className="w-4 h-4 text-blue-500" />
+                <div className={clsx("p-2 rounded-lg", mqttStatus === "Connected" ? "bg-blue-50" : "bg-red-50")}>
+                  <Wifi className={clsx("w-4 h-4", mqttStatus === "Connected" ? "text-blue-500" : "text-red-500")} />
                 </div>
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium">Wi-Fi Network</span>
-                  <span className="text-[10px] text-slate-400">Home_5G (Signal: Good)</span>
+                  <span className="text-sm font-medium">Device Status</span>
+                  <span className="text-[10px] text-slate-400">
+                    {mqttStatus === "Connected" ? (deviceActive ? "Online (Receiving Data)" : "System Connected, Shirt Offline") : "Offline"}
+                  </span>
                 </div>
               </div>
-              <span className="font-bold text-blue-500">Connected</span>
+              <span className={clsx("font-bold", isConnected ? "text-blue-500" : "text-red-500")}>
+                {isConnected ? "Active" : "Inactive"}
+              </span>
             </div>
 
-            {
-    /* UI Latency */
-  }
+            {/* UI Latency */}
             <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-100">
               <div className="flex items-center gap-3 text-slate-600">
                 <div className="p-2 rounded-lg bg-indigo-50">
@@ -365,7 +540,7 @@ export function Dashboard() {
                 <span className="text-sm font-medium">UI Latency</span>
               </div>
               <div className="flex flex-col items-end">
-                <span className="font-bold text-indigo-500">≤ 300ms</span>
+                <span className="font-bold text-indigo-500">{uiLatency}ms</span>
                 <span className="text-[10px] text-slate-400">Device → Web</span>
               </div>
             </div>
@@ -381,7 +556,7 @@ export function Dashboard() {
                 <span className="text-sm font-medium">Local Storage</span>
               </div>
               <div className="flex flex-col items-end">
-                <span className="font-bold text-purple-500">28.5 GB</span>
+                <span className="font-bold text-purple-500">32 GB</span>
                 <span className="text-[10px] text-slate-400">MicroSD Free</span>
               </div>
             </div>
@@ -398,7 +573,7 @@ export function Dashboard() {
                   <span className="text-sm font-medium">Sensor Readiness</span>
                 </div>
                 <span
-    className="text-sm font-bold"
+    className="text-base font-bold"
     style={{
       color: overallReadiness >= 95 ? "#059669" : overallReadiness >= 80 ? "#d97706" : "#dc2626"
     }}
@@ -407,10 +582,8 @@ export function Dashboard() {
                 </span>
               </div>
 
-              {
-    /* Overall bar */
-  }
-              <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden mb-3">
+              {/* Overall bar */}
+              <div className="w-full h-2.5 rounded-full bg-slate-200 overflow-hidden mb-3">
                 <div
     className="h-full rounded-full transition-all duration-700"
     style={{
@@ -458,6 +631,7 @@ export function Dashboard() {
       {
     /* Daily Sensor Summary */
   }
+      {/* Daily Sensor Summary */}
       <div>
         <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
           <Activity className="w-5 h-5 text-blue-500" />
@@ -493,85 +667,230 @@ export function Dashboard() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-y-4 gap-x-2 text-sm border-t border-slate-100 pt-4">
+              <div className="grid grid-cols-3 gap-y-5 gap-x-3 text-sm border-t border-slate-100 pt-5">
                 <div>
-                  <div className="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Average</div>
-                  <div className="text-slate-700 font-medium">{sensor.avg} {sensor.unit}</div>
+                  <div className="text-slate-400 text-[11px] font-bold uppercase tracking-wider mb-1">Average</div>
+                  <div className="text-slate-700 font-medium text-base">{sensor.avg} <span className="text-xs text-slate-400">{sensor.unit}</span></div>
                 </div>
                 <div>
-                  <div className="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Std Dev</div>
-                  <div className="text-slate-700 font-medium">±{sensor.std}</div>
+                  <div className="text-slate-400 text-[11px] font-bold uppercase tracking-wider mb-1">Min</div>
+                  <div className="text-slate-700 font-medium text-base">{sensor.min} <span className="text-xs text-slate-400">{sensor.unit}</span></div>
                 </div>
                 <div>
-                  <div className="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Min</div>
-                  <div className="text-slate-700 font-medium">{sensor.min} {sensor.unit}</div>
-                </div>
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Max</div>
-                  <div className="text-slate-700 font-medium">{sensor.max} {sensor.unit}</div>
+                  <div className="text-slate-400 text-[11px] font-bold uppercase tracking-wider mb-1">Max</div>
+                  <div className="text-slate-700 font-medium text-base">{sensor.max} <span className="text-xs text-slate-400">{sensor.unit}</span></div>
                 </div>
               </div>
             </div>)}
         </div>
       </div>
 
-      {
-    /* Live Sensor Telemetry */
-  }
+      {/* ── Live & Historical Data (InfluxDB + MQTT) ── */}
       <div>
-        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-          <Activity className="w-5 h-5 text-blue-500" />
-          Live Sensor Telemetry
-        </h2>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6 px-1 mt-10">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Clock className="w-5 h-5 text-indigo-500" />
+                <h2 className="text-lg font-bold text-slate-800">Live & Historical Data</h2>
+              </div>
+              {isConnected && (
+                <div className="text-xs font-mono flex items-center gap-1.5 text-emerald-500 bg-emerald-50 px-2 py-1 rounded-full border border-emerald-100">
+                  Live
+                  <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse bg-emerald-500" />
+                </div>
+              )}
+            </div>
+            
+            {/* Toggles for lines */}
+            <div className="flex items-center flex-wrap gap-4 mt-2">
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Show Lines:</span>
+              <label className="flex items-center gap-1.5 cursor-pointer group">
+                <input type="checkbox" checked={showLines.max} onChange={() => setShowLines(prev => ({...prev, max: !prev.max}))} className="rounded border-slate-300 text-red-500 focus:ring-red-500 w-4 h-4 cursor-pointer" />
+                <span className="text-sm font-medium text-slate-600 group-hover:text-slate-800 transition-colors">Max</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer group">
+                <input type="checkbox" checked={showLines.min} onChange={() => setShowLines(prev => ({...prev, min: !prev.min}))} className="rounded border-slate-300 text-blue-500 focus:ring-blue-500 w-4 h-4 cursor-pointer" />
+                <span className="text-sm font-medium text-slate-600 group-hover:text-slate-800 transition-colors">Min</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer group">
+                <input type="checkbox" checked={showLines.avg} onChange={() => setShowLines(prev => ({...prev, avg: !prev.avg}))} className="rounded border-slate-300 text-slate-500 focus:ring-slate-500 w-4 h-4 cursor-pointer" />
+                <span className="text-sm font-medium text-slate-600 group-hover:text-slate-800 transition-colors">Avg</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer group">
+                <input type="checkbox" checked={showLines.baseline} onChange={() => setShowLines(prev => ({...prev, baseline: !prev.baseline}))} className="rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 w-4 h-4 cursor-pointer" />
+                <span className="text-sm font-medium text-slate-600 group-hover:text-slate-800 transition-colors">Baseline</span>
+              </label>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {/* Dropdown 1: Time Range */}
+            <select 
+              className="bg-white border border-slate-200 text-slate-700 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2 outline-none cursor-pointer hover:border-indigo-300 transition-colors shadow-sm"
+              onChange={(e) => setHistoryRange(e.target.value)}
+              value={historyRange}
+            >
+              <option value="-1h">Last 1 Hour</option>
+              <option value="-12h">Last 12 Hours</option>
+              <option value="-24h">Last 24 Hours</option>
+              <option value="-7d">Last 7 Days</option>
+              <option value="-30d">Last 30 Days</option>
+            </select>
+
+            {/* Dropdown 2: Data Interval */}
+            <select 
+              className="bg-white border border-slate-200 text-slate-700 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2 outline-none cursor-pointer hover:border-indigo-300 transition-colors shadow-sm"
+              onChange={(e) => setHistoryAggregate(e.target.value)}
+              value={historyAggregate}
+            >
+              <option value="5s">Every 5 Seconds</option>
+              <option value="1m">Every 1 Minute</option>
+              <option value="10m">Every 10 Minutes</option>
+              <option value="1h">Every 1 Hour</option>
+              <option value="3h">Every 3 Hours</option>
+            </select>
+          </div>
+        </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <SensorChart
-    title="Heart Rate & HRV (BPM)"
-    color="#f43f5e"
-    icon={Heart}
-    data={data}
-    dataKey="hr"
-    domain={[55, 122]}
-    baseline={82.4}
-    min={65}
-    max={115.2}
-    unit="BPM"
-  />
-          <SensorChart
-    title="Electrodermal Activity (EDA)"
-    color="#3b82f6"
-    icon={Activity}
-    data={data}
-    dataKey="eda"
-    domain={[0, 10]}
-    baseline={4.8}
-    min={1.2}
-    max={8.9}
-    unit="µS"
-  />
-          <SensorChart
-    title="Skin Temperature (°C)"
-    color="#f59e0b"
-    icon={Thermometer}
-    data={data}
-    dataKey="temp"
-    domain={[35.5, 37.8]}
-    baseline={36.6}
-    min={36.1}
-    max={37.4}
-    unit="°C"
-  />
-          <SensorChart
-    title="Movement Magnitude (IMU)"
-    color="#8b5cf6"
-    icon={Zap}
-    data={data}
-    dataKey="imu"
-    domain={[0, 4]}
-    baseline={1.1}
-    min={0.1}
-    max={3.5}
-    unit="g"
-  />
+          {/* Heart Rate History */}
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+            <h3 className="text-slate-700 font-medium text-sm mb-4">Heart Rate (BPM)</h3>
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={combinedData}>
+                  <defs>
+                    <linearGradient id="colorHr" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="time" minTickGap={50} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                  <YAxis domain={['auto', 'auto']} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 15px rgba(0,0,0,0.1)' }} formatter={(value) => [value.toFixed(1), 'Heart Rate (BPM)']} />
+                  {/* Lines (Drawn First) */}
+                  {showLines.baseline && baselineData.hr !== null && <ReferenceLine y={baselineData.hr} stroke="#10b981" strokeWidth={2} strokeDasharray="5 5" />}
+                  {showLines.max && hrStats.max !== null && <ReferenceLine y={hrStats.max} stroke="#f43f5e" strokeDasharray="3 3" opacity={0.6} />}
+                  {showLines.avg && hrStats.avg !== null && <ReferenceLine y={hrStats.avg} stroke="#64748b" strokeDasharray="3 3" opacity={0.6} />}
+                  {showLines.min && hrStats.min !== null && <ReferenceLine y={hrStats.min} stroke="#3b82f6" strokeDasharray="3 3" opacity={0.6} />}
+                  
+                  {/* Area Chart */}
+                  <Area type="monotone" dataKey="bpm" stroke="#f43f5e" strokeWidth={3} fillOpacity={1} fill="url(#colorHr)" />
+                  
+                  {/* Labels (Drawn Last to always be on top) */}
+                  {showLines.baseline && baselineData.hr !== null && <ReferenceLine y={baselineData.hr} stroke="none" label={<CustomReferenceLabel value={`Baseline: ${baselineData.hr.toFixed(1)}`} fill="#10b981" position="Right" dx={-110} dy={0} />} />}
+                  {showLines.max && hrStats.max !== null && <ReferenceLine y={hrStats.max} stroke="none" label={<CustomReferenceLabel value={`Max: ${hrStats.max.toFixed(1)}`} fill="#f43f5e" position="Left" dy={24} />} />}
+                  {showLines.avg && hrStats.avg !== null && <ReferenceLine y={hrStats.avg} stroke="none" label={<CustomReferenceLabel value={`Avg: ${hrStats.avg.toFixed(1)}`} fill="#64748b" position="Right" dy={0} />} />}
+                  {showLines.min && hrStats.min !== null && <ReferenceLine y={hrStats.min} stroke="none" label={<CustomReferenceLabel value={`Min: ${hrStats.min.toFixed(1)}`} fill="#3b82f6" position="Left" dy={0} />} />}
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* EDA History */}
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+            <h3 className="text-slate-700 font-medium text-sm mb-4">Electrodermal Activity (µS)</h3>
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={combinedData}>
+                  <defs>
+                    <linearGradient id="colorEda" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="time" minTickGap={50} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                  <YAxis domain={['auto', 'auto']} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 15px rgba(0,0,0,0.1)' }} formatter={(value) => [value.toFixed(1), 'Electrodermal Activity (µS)']} />
+                  {/* Lines */}
+                  {showLines.baseline && baselineData.eda !== null && <ReferenceLine y={baselineData.eda} stroke="#10b981" strokeWidth={2} strokeDasharray="5 5" />}
+                  {showLines.max && edaStats.max !== null && <ReferenceLine y={edaStats.max} stroke="#3b82f6" strokeDasharray="3 3" opacity={0.6} />}
+                  {showLines.avg && edaStats.avg !== null && <ReferenceLine y={edaStats.avg} stroke="#64748b" strokeDasharray="3 3" opacity={0.6} />}
+                  {showLines.min && edaStats.min !== null && <ReferenceLine y={edaStats.min} stroke="#10b981" strokeDasharray="3 3" opacity={0.6} />}
+                  
+                  {/* Area */}
+                  <Area type="monotone" dataKey="gsr" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorEda)" />
+
+                  {/* Labels */}
+                  {showLines.baseline && baselineData.eda !== null && <ReferenceLine y={baselineData.eda} stroke="none" label={<CustomReferenceLabel value={`Baseline: ${baselineData.eda.toFixed(1)}`} fill="#10b981" position="Right" dx={-110} dy={0} />} />}
+                  {showLines.max && edaStats.max !== null && <ReferenceLine y={edaStats.max} stroke="none" label={<CustomReferenceLabel value={`Max: ${edaStats.max.toFixed(1)}`} fill="#3b82f6" position="Left" dy={24} />} />}
+                  {showLines.avg && edaStats.avg !== null && <ReferenceLine y={edaStats.avg} stroke="none" label={<CustomReferenceLabel value={`Avg: ${edaStats.avg.toFixed(1)}`} fill="#64748b" position="Right" dy={0} />} />}
+                  {showLines.min && edaStats.min !== null && <ReferenceLine y={edaStats.min} stroke="none" label={<CustomReferenceLabel value={`Min: ${edaStats.min.toFixed(1)}`} fill="#10b981" position="Left" dy={0} />} />}
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Skin Temp History */}
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+            <h3 className="text-slate-700 font-medium text-sm mb-4">Skin Temperature (°C)</h3>
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={combinedData}>
+                  <defs>
+                    <linearGradient id="colorTemp" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="time" minTickGap={50} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                  <YAxis domain={['auto', 'auto']} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 15px rgba(0,0,0,0.1)' }} formatter={(value) => [value.toFixed(1), 'Skin Temperature (°C)']} />
+                  {/* Lines */}
+                  {showLines.baseline && baselineData.temp !== null && <ReferenceLine y={baselineData.temp} stroke="#10b981" strokeWidth={2} strokeDasharray="5 5" />}
+                  {showLines.max && tempStats.max !== null && <ReferenceLine y={tempStats.max} stroke="#f59e0b" strokeDasharray="3 3" opacity={0.6} />}
+                  {showLines.avg && tempStats.avg !== null && <ReferenceLine y={tempStats.avg} stroke="#64748b" strokeDasharray="3 3" opacity={0.6} />}
+                  {showLines.min && tempStats.min !== null && <ReferenceLine y={tempStats.min} stroke="#8b5cf6" strokeDasharray="3 3" opacity={0.6} />}
+                  
+                  {/* Area */}
+                  <Area type="monotone" dataKey="temp" stroke="#f59e0b" strokeWidth={3} fillOpacity={1} fill="url(#colorTemp)" />
+
+                  {/* Labels */}
+                  {showLines.baseline && baselineData.temp !== null && <ReferenceLine y={baselineData.temp} stroke="none" label={<CustomReferenceLabel value={`Baseline: ${baselineData.temp.toFixed(1)}`} fill="#10b981" position="Right" dx={-110} dy={0} />} />}
+                  {showLines.max && tempStats.max !== null && <ReferenceLine y={tempStats.max} stroke="none" label={<CustomReferenceLabel value={`Max: ${tempStats.max.toFixed(1)}`} fill="#f59e0b" position="Left" dy={24} />} />}
+                  {showLines.avg && tempStats.avg !== null && <ReferenceLine y={tempStats.avg} stroke="none" label={<CustomReferenceLabel value={`Avg: ${tempStats.avg.toFixed(1)}`} fill="#64748b" position="Right" dy={0} />} />}
+                  {showLines.min && tempStats.min !== null && <ReferenceLine y={tempStats.min} stroke="none" label={<CustomReferenceLabel value={`Min: ${tempStats.min.toFixed(1)}`} fill="#8b5cf6" position="Left" dy={0} />} />}
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* IMU History */}
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+            <h3 className="text-slate-700 font-medium text-sm mb-4">Movement Magnitude (g)</h3>
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={combinedData}>
+                  <defs>
+                    <linearGradient id="colorImu" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="time" minTickGap={50} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                  <YAxis domain={['auto', 'auto']} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 15px rgba(0,0,0,0.1)' }} formatter={(value) => [value.toFixed(2), 'Movement Magnitude (g)']} />
+                  {/* Lines */}
+                  {showLines.baseline && baselineData.imu !== null && <ReferenceLine y={baselineData.imu} stroke="#10b981" strokeWidth={2} strokeDasharray="5 5" />}
+                  {showLines.max && imuStats.max !== null && <ReferenceLine y={imuStats.max} stroke="#8b5cf6" strokeDasharray="3 3" opacity={0.6} />}
+                  {showLines.avg && imuStats.avg !== null && <ReferenceLine y={imuStats.avg} stroke="#64748b" strokeDasharray="3 3" opacity={0.6} />}
+                  {showLines.min && imuStats.min !== null && <ReferenceLine y={imuStats.min} stroke="#f43f5e" strokeDasharray="3 3" opacity={0.6} />}
+                  
+                  {/* Area */}
+                  <Area type="monotone" dataKey="imu" stroke="#8b5cf6" strokeWidth={3} fillOpacity={1} fill="url(#colorImu)" />
+
+                  {/* Labels */}
+                  {showLines.baseline && baselineData.imu !== null && <ReferenceLine y={baselineData.imu} stroke="none" label={<CustomReferenceLabel value={`Baseline: ${baselineData.imu.toFixed(2)}`} fill="#10b981" position="Right" dx={-110} dy={0} />} />}
+                  {showLines.max && imuStats.max !== null && <ReferenceLine y={imuStats.max} stroke="none" label={<CustomReferenceLabel value={`Max: ${imuStats.max.toFixed(2)}`} fill="#8b5cf6" position="Left" dy={24} />} />}
+                  {showLines.avg && imuStats.avg !== null && <ReferenceLine y={imuStats.avg} stroke="none" label={<CustomReferenceLabel value={`Avg: ${imuStats.avg.toFixed(2)}`} fill="#64748b" position="Right" dy={0} />} />}
+                  {showLines.min && imuStats.min !== null && <ReferenceLine y={imuStats.min} stroke="none" label={<CustomReferenceLabel value={`Min: ${imuStats.min.toFixed(2)}`} fill="#f43f5e" position="Left" dy={0} />} />}
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
         </div>
       </div>
     </div>;
