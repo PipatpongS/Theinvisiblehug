@@ -87,16 +87,16 @@ export function AiInfo() {
       <div className="bg-white rounded-[2rem] p-6 border border-slate-200 shadow-sm flex flex-row items-center gap-8 flex-1 min-h-0 h-[45%]">
         
         {/* Matrix Image */}
-        <div className="w-5/12 h-full rounded-2xl overflow-hidden border-2 border-slate-100 bg-slate-50 flex items-center justify-center p-0">
+        <div className="h-full aspect-square rounded-2xl overflow-hidden border-2 border-slate-100 bg-slate-50 flex items-center justify-center flex-shrink-0">
           <img 
             src="/confusion_matrix_result.png?v=3" 
             alt="Confusion Matrix" 
-            className="w-full h-full object-contain mix-blend-multiply scale-105"
+            className="w-full h-full object-contain mix-blend-multiply"
           />
         </div>
 
         {/* Text Explanation */}
-        <div className="w-7/12 h-full flex flex-col justify-center overflow-y-auto pr-4 py-2">
+        <div className="flex-1 h-full flex flex-col justify-center overflow-y-auto pr-4 py-2">
           <h3 className="font-extrabold text-slate-800 text-2xl mb-3 flex items-center gap-3">
             <ShieldCheck className="w-8 h-8 text-blue-500" />
             Real-world Test Results
